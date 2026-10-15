@@ -1,0 +1,105 @@
+"""
+Recherche du médoïde vrai de chaque cluster K-means
+====================================================
+
+Entrées attendues (déjà calculées dans ton notebook) :
+    pca_result : array (n_echantillons, n_composantes), sortie de la PCA
+    kmeans     : objet KMeans déjà entraîné
+    labels     : array (n_echantillons,), issu de kmeans.fit_predict(pca_result)
+
+Définition :
+    Le médoïde d'un cluster est l'échantillon RÉEL dont la somme des distances
+    à tous les autres membres du cluster est minimale.
+    Contrairement au centroïde (moyenne virtuelle), c'est une vraie date ERA5.
+"""
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import pairwise_distances
+
+
+def trouver_medoides(pca_result, labels, metric="euclidean", taille_bloc=2000):
+    """
+    Retourne un DataFrame avec, pour chaque cluster :
+        - l'indice du médoïde dans pca_result
+        - la taille du cluster
+        - la distance moyenne du médoïde aux autres membres
+
+    taille_bloc : nombre de lignes traitées à la fois.
+        Le calcul complet coûte n x n distances par cluster. Le traitement
+        par blocs donne le MÊME résultat exact, mais limite la mémoire
+        (utile si un cluster contient des milliers de dates).
+    """
+    resultats = []
+
+    for k in np.unique(labels):
+        # 1. Indices (dans pca_result) des échantillons du cluster k
+        membres = np.where(labels == k)[0]
+        Xk = pca_result[membres]
+        n = len(membres)
+
+        # 2. Somme des distances de chaque membre à tous les autres membres
+        sommes = np.empty(n)
+        for debut in range(0, n, taille_bloc):
+            fin = min(debut + taille_bloc, n)
+            D_bloc = pairwise_distances(Xk[debut:fin], Xk, metric=metric)
+            sommes[debut:fin] = D_bloc.sum(axis=1)
+
+        # 3. Le médoïde est le membre avec la plus petite somme
+        pos_local = np.argmin(sommes)       # position dans le cluster
+        idx_global = membres[pos_local]     # position dans pca_result
+
+        resultats.append({
+            "cluster": k,
+            "indice_medoide": idx_global,
+            "taille_cluster": n,
+            "dist_moyenne_medoide": sommes[pos_local] / max(n - 1, 1),
+        })
+
+    return pd.DataFrame(resultats).set_index("cluster")
+
+
+def plus_proches_centroides(pca_result, labels, kmeans):
+    """
+    Méthode rapide, pour comparaison : échantillon du cluster
+    le plus proche de son centroïde.
+    """
+    indices = {}
+    for k in np.unique(labels):
+        membres = np.where(labels == k)[0]
+        d = np.linalg.norm(pca_result[membres] - kmeans.cluster_centers_[k], axis=1)
+        indices[k] = membres[np.argmin(d)]
+    return pd.Series(indices, name="indice_proche_centroide")
+
+
+# ----------------------------------------------------------------------
+# Utilisation
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    # >>> Dans ton notebook, supprime ce bloc de démonstration et utilise
+    # >>> directement tes variables pca_result, kmeans et labels.
+    from sklearn.cluster import KMeans
+
+    rng = np.random.default_rng(0)
+    pca_result = np.vstack([
+        rng.normal(loc=c, scale=1.0, size=(500, 10)) for c in (-4, 0, 4)
+    ])
+    kmeans = KMeans(n_clusters=3, n_init=10, random_state=0)
+    labels = kmeans.fit_predict(pca_result)
+    # <<< fin de la démonstration
+
+    # 1. Médoïdes vrais
+    medoides = trouver_medoides(pca_result, labels)
+
+    # 2. Comparaison avec la méthode du plus proche du centroïde
+    medoides = medoides.join(plus_proches_centroides(pca_result, labels, kmeans))
+    medoides["meme_echantillon"] = (
+        medoides["indice_medoide"] == medoides["indice_proche_centroide"]
+    )
+
+    print(medoides)
+
+    # 3. Retrouver les dates ERA5 correspondantes
+    #    (si pca_result a été construit dans l'ordre de ds.time)
+    # dates_medoides = ds.time.values[medoides["indice_medoide"].values]
+    # champs_medoides = ds.isel(time=medoides["indice_medoide"].values)
