@@ -1,0 +1,47 @@
+import os, re, time
+
+def dernier_pourcentage(log_path, nom_fichier):
+    """Lit la fin du log et renvoie le dernier % pour ce fichier."""
+    with open(log_path, "rb") as f:
+        f.seek(max(0, os.path.getsize(log_path) - 8192))
+        fin = f.read().decode("utf-8", errors="ignore")
+    motif = re.compile(re.escape(nom_fichier) + r":\s*(\d+)%")
+    for ligne in reversed(re.split(r"[\r\n]+", fin)):
+        m = motif.search(ligne)
+        if m:
+            return int(m.group(1))
+    return None
+
+def grib_complet(path):
+    if not os.path.exists(path) or os.path.getsize(path) < 4:
+        return False
+    with open(path, "rb") as f:
+        f.seek(-4, os.SEEK_END)
+        return f.read() == b"7777"
+
+def attendre_grib(log_path, grib_path, stabilite=30,
+                  intervalle=5, delai_max=6 * 3600, alerte_blocage=1800):
+    nom = os.path.basename(grib_path)
+    debut = time.time()
+    etat_log, depuis = None, time.time()
+
+    while time.time() - debut < delai_max:
+        if os.path.exists(log_path):
+            st = os.stat(log_path)
+            etat = (st.st_size, st.st_mtime)
+            if etat != etat_log:                 # le log bouge encore
+                etat_log, depuis = etat, time.time()
+
+            pct = dernier_pourcentage(log_path, nom)
+            immobile = time.time() - depuis
+
+            if pct == 100 and immobile >= stabilite and grib_complet(grib_path):
+                return grib_path
+            if pct is not None and pct < 100 and immobile >= alerte_blocage:
+                print(f"Attention : bloqué à {pct}% depuis {int(immobile)}s")
+
+        time.sleep(intervalle)
+    raise TimeoutError(f"{nom} non terminé après {delai_max}s")
+
+attendre_grib("telechargement.log", "Nom_fichier.grib")
+# suite du code : le fichier est prêt
